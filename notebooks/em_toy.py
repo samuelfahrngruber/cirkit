@@ -41,10 +41,10 @@ def new_circuit():
         initialization_kwargs={"mean": 2, "stddev": 1}
     ))
 
-    g0 = GaussianLayer(Scope((0,)), 2, mean_factory=mean_factory, stddev_factory=stddev_factory)
-    g1 = GaussianLayer(Scope((1,)), 2, mean_factory=mean_factory, stddev_factory=stddev_factory)
-    prod = HadamardLayer(num_input_units=2, arity=2)
-    sl = SumLayer(2, 1, 1, weight_factory=weight_factory)
+    g0 = GaussianLayer(Scope((0,)), 3, mean_factory=mean_factory, stddev_factory=stddev_factory)
+    g1 = GaussianLayer(Scope((1,)), 3, mean_factory=mean_factory, stddev_factory=stddev_factory)
+    prod = HadamardLayer(num_input_units=3, arity=2)
+    sl = SumLayer(3, 1, 1, weight_factory=weight_factory)
 
     symbolic_circuit = Circuit(
         layers=[g0, g1, prod, sl],
@@ -71,7 +71,8 @@ def plot_circuit_distribution_2d(circuit, data=None, ax=plt):
 
     xy = itertools.product(x, y)
     xy = torch.tensor(list(xy))
-    Z = circuit(xy).detach().exp().numpy().reshape(100, 100)
+    # Z = circuit(xy).detach().numpy().reshape(100, 100)
+    Z = circuit(xy).detach().numpy().reshape(100, 100)
 
 
     ax.contourf(X, Y, Z)
@@ -166,17 +167,22 @@ class FullBatchEM:
                 update_params_nested(weights, w_sn_new_reparam)
 
     def e_leaves(self, log_likelihoods_per_sample, data_full):
+        """
+        Args:
+            data_full: Train data; Shape [Samples, Features]
+        """
         for leaf, outputs in self.leaf_layer_outputs.items():
             with torch.no_grad():
-                p_l = outputs.grad
+                p_l = outputs.grad # [Inputs, Samples, Outputs]
+                p_l = p_l.permute(2, 1, 0) # [Outputs, Samples, Inputs]
 
-                x = data_full[:,leaf.scope_idx].squeeze()
-                x_2 = x ** 2
+                x = data_full[:,leaf.scope_idx].squeeze() # [Samples, Features]
+                x_2 = x ** 2 # [Samples, Features]
 
-                sum_x_suff_stats_x = torch.sum(p_l * x, dim=1)
-                sum_x_suff_stats_x_2 = torch.sum(p_l * x_2, dim=1)
+                sum_x_suff_stats_x = torch.sum(p_l * x, dim=1) # [Outputs, Inputs]
+                sum_x_suff_stats_x_2 = torch.sum(p_l * x_2, dim=1) # [Outputs, Inputs]
 
-                sum_x_p_l = torch.sum(p_l, dim=1)
+                sum_x_p_l = torch.sum(p_l, dim=1) # [Outputs, Inputs]
 
                 self.sum_x_suff_stats_x[leaf] = sum_x_suff_stats_x
                 self.sum_x_suff_stats_x_2[leaf] = sum_x_suff_stats_x_2
@@ -185,9 +191,9 @@ class FullBatchEM:
     def m_leaves(self):
         for leaf in self.leaf_layer_outputs.keys():
             with torch.no_grad():
-                sum_x_suff_stats_x = self.sum_x_suff_stats_x[leaf]
-                sum_x_suff_stats_x_2 = self.sum_x_suff_stats_x_2[leaf]
-                sum_x_p_l = self.sum_x_p_l[leaf]
+                sum_x_suff_stats_x = self.sum_x_suff_stats_x[leaf] # [Outputs, Inputs]
+                sum_x_suff_stats_x_2 = self.sum_x_suff_stats_x_2[leaf] # [Outputs, Inputs]
+                sum_x_p_l = self.sum_x_p_l[leaf] # [Outputs, Inputs]
 
                 x = sum_x_suff_stats_x / sum_x_p_l
                 x_2 = sum_x_suff_stats_x_2 / sum_x_p_l
@@ -197,6 +203,9 @@ class FullBatchEM:
                 var = var.clamp(min=1e-3)
 
                 stddev = torch.sqrt(var)
+
+                mean = mean.permute(1, 0)
+                stddev = stddev.permute(1, 0)
 
                 print(f"{mean=} {var=}")
 
