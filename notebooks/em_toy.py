@@ -72,14 +72,14 @@ def plot_circuit_distribution_2d(circuit, data=None, ax=plt):
     xy = itertools.product(x, y)
     xy = torch.tensor(list(xy))
     # Z = circuit(xy).detach().numpy().reshape(100, 100)
-    Z = circuit(xy).detach().numpy().reshape(100, 100)
+    Z = circuit(xy).detach().exp().numpy().reshape(100, 100)
 
 
-    ax.contourf(X, Y, Z)
+    ax.contourf(X, Y, Z, levels=50)
     # ax.colorbar()
 
     if data is not None:
-        ax.scatter(data[:, 0], data[:, 1], color="red", marker="x")
+        ax.scatter(data[:, 0], data[:, 1], color="red", marker="+", alpha=0.5)
 
 # plot_circuit_distribution_2d(circuit)
 
@@ -96,7 +96,7 @@ class AutoGridPlotter:
         ax = self.axs[self.idx]
         self.idx = self.idx + 1
         ax.title.set_text(f"i={self.idx}")
-        if self.idx > self.n:
+        if self.idx >= self.n:
             self.show()
             self.fig = plt.figure()
             self.axs = self.fig.subplots(self.rows, self.cols).flatten()
@@ -195,17 +195,17 @@ class FullBatchEM:
                 sum_x_suff_stats_x_2 = self.sum_x_suff_stats_x_2[leaf] # [Outputs, Inputs]
                 sum_x_p_l = self.sum_x_p_l[leaf] # [Outputs, Inputs]
 
-                x = sum_x_suff_stats_x / sum_x_p_l
-                x_2 = sum_x_suff_stats_x_2 / sum_x_p_l
+                x = sum_x_suff_stats_x / sum_x_p_l # [Outputs, Inputs]
+                x_2 = sum_x_suff_stats_x_2 / sum_x_p_l # [Outputs, Inputs]
 
-                mean = x
-                var = x_2 - x ** 2
-                var = var.clamp(min=1e-3)
+                mean = x # [Outputs, Inputs]
+                var = x_2 - x ** 2 # [Outputs, Inputs]
+                var = var.clamp(min=1e-3) # [Outputs, Inputs]
 
-                stddev = torch.sqrt(var)
+                stddev = torch.sqrt(var) # [Outputs, Inputs]
 
-                mean = mean.permute(1, 0)
-                stddev = stddev.permute(1, 0)
+                mean = mean.view(-1)
+                stddev = stddev.view(-1)
 
                 print(f"{mean=} {var=}")
 
@@ -221,13 +221,13 @@ class FullBatchEM:
         self.e_leaves(log_likelihoods_per_sample, data)
         self.m_weights()
         self.m_leaves()
-        return log_likelihoods_per_sample.sum()
+        return log_likelihoods_per_sample.mean()
 
 em = FullBatchEM(circuit)
-data = torch.tensor([[1.0, 1.0], [0.8, 1.2], [2.0, 2.0], [2.1, 2.2], [2.2, 2.2], [2.1, 2.1], [-3, -3], [-3.1, -2.8]])
+data = torch.tensor([[1.0, 1.0], [0.8, 1.2], [2.0, 2.0], [2.1, 2.2], [2.2, 2.2], [2.1, 2.1], [-3, -3], [-3.1, -2.8], [-4, -3], [-4.2, -3.3], [-4.2, -2.3]])
 em_losses = []
 grid_plotter = AutoGridPlotter()
-for i in range(9):
+for i in range(21):
     # em.e_step(torch.from_numpy(ring_samples))
 
     # data = torch.tensor([[1.0, 1.0]])
