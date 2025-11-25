@@ -56,7 +56,7 @@ def new_circuit():
         },
         outputs=[sl]
     )
-    pctx = PipelineContext(backend="torch", semiring="lse-sum", fold=True, optimize=False)
+    pctx = PipelineContext(backend="torch", semiring="lse-sum", fold=False, optimize=False)
     circuit = compile(symbolic_circuit, pctx)
     circuit = circuit.to(device)
     return symbolic_circuit, circuit
@@ -79,7 +79,7 @@ def plot_circuit_distribution_2d(circuit, data=None, ax=plt):
     # ax.colorbar()
 
     if data is not None:
-        ax.scatter(data[:, 0], data[:, 1], color="red", marker="+", alpha=0.5)
+        ax.scatter(data[:, 1], data[:, 0], color="red", marker="+", alpha=0.5)
 
 # plot_circuit_distribution_2d(circuit)
 
@@ -176,7 +176,9 @@ class FullBatchEM:
                 p_l = outputs.grad # [Inputs, Samples, Outputs]
                 p_l = p_l.permute(2, 1, 0) # [Outputs, Samples, Inputs]
 
-                x = data_full[:,leaf.scope_idx].squeeze() # [Samples, Features]
+                # old impl:
+                # x = data_full[:,leaf.scope_idx[-1]] # [Samples, Features]
+                x = data_full[..., leaf.scope_idx].permute(1, 0, 2) # [???] taken from cirkit/backend/torch/circuits.py:66
                 x_2 = x ** 2 # [Samples, Features]
 
                 sum_x_suff_stats_x = torch.sum(p_l * x, dim=1) # [Outputs, Inputs]
@@ -204,9 +206,6 @@ class FullBatchEM:
 
                 stddev = torch.sqrt(var) # [Outputs, Inputs]
 
-                mean = mean.view(-1)
-                stddev = stddev.view(-1)
-
                 print(f"{mean=} {var=}")
 
                 update_params_nested(leaf.params["mean"], mean)
@@ -225,9 +224,10 @@ class FullBatchEM:
 
 em = FullBatchEM(circuit)
 data = torch.tensor([[1.0, 1.0], [0.8, 1.2], [2.0, 2.0], [2.1, 2.2], [2.2, 2.2], [2.1, 2.1], [-3, -3], [-3.1, -2.8], [-4, -3], [-4.2, -3.3], [-4.2, -2.3]])
+data = torch.tensor([[1.0, 1.0], [0.8, 1.2], [2.0, 2.0], [2.1, 2.2], [2.2, 2.2], [2.1, 2.1], [-5, -3], [-3.1, -2.8], [-4, -3], [-1, -3], [0, 5]])
 em_losses = []
 grid_plotter = AutoGridPlotter()
-for i in range(21):
+for i in range(9):
     # em.e_step(torch.from_numpy(ring_samples))
 
     # data = torch.tensor([[1.0, 1.0]])
