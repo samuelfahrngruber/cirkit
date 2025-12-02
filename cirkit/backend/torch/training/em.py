@@ -108,10 +108,10 @@ class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
         stddev = torch.sqrt(var)  # [Outputs, Inputs]
 
         update_params_nested(self.layer.params["mean"], mean)
-        update_params_nested(self.layer.params["stddev"], stddev)
+        # update_params_nested(self.layer.params["stddev"], stddev)
 
         self.mean.copy_(mean.squeeze())
-        self.stddev.copy_(stddev.squeeze())
+        #  self.stddev.copy_(stddev.squeeze())
 
 
 def create_layer_em(layer: TorchLayer) -> AbstractLayerEM[TorchLayer]:
