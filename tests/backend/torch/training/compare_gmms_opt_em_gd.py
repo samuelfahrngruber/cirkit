@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from sklearn.datasets import make_moons
 from torch import optim
 from torch.utils.data import TensorDataset, DataLoader
 
@@ -9,14 +11,14 @@ from cirkit.symbolic.circuit import Circuit
 from cirkit.symbolic.layers import GaussianLayer, SumLayer, HadamardLayer
 from cirkit.templates import utils
 from cirkit.utils.scope import Scope
-from sklearn.datasets import make_swiss_roll, make_moons
-
 
 # setup data
 n_samples = 1_000
 n_samples_train = 250
 data_train, _ = make_moons(n_samples=n_samples, noise=0.1)
 data_test, _ = make_moons(n_samples=n_samples_train, noise=0.1)
+# data_train, _ = make_blobs(centers=3, cluster_std=0.5, random_state=0)
+# data_test, _ = make_blobs(centers=3, cluster_std=0.5, random_state=0)
 dataset_train = TensorDataset(torch.tensor(data_train).to(torch.float32))
 dataset_test = TensorDataset(torch.tensor(data_test).to(torch.float32))
 batch_size = n_samples
@@ -109,3 +111,25 @@ plt.xlabel("Full-Batch Epochs")
 plt.ylabel("Average Log-Likelihood")
 plt.legend()
 plt.show()
+
+def plot_circuit_distribution_2d(circuit, samples, plot_samples=True):
+    plt.figure()
+
+    x = np.linspace(samples[:, 0].min() - 0.2, samples[:, 0].max() + 0.2, 100, dtype=np.float32)
+    y = np.linspace(samples[:, 1].min() - 0.2, samples[:, 1].max() + 0.2, 100, dtype=np.float32)
+
+    X, Y = np.meshgrid(x, y)
+
+    xy = np.stack([X.ravel(), Y.ravel()], axis=1)
+    xy = torch.tensor(xy, dtype=torch.float32)
+
+    Z = circuit(xy).detach().exp().numpy().reshape(100, 100)
+
+    plt.contourf(X, Y, Z)
+
+    if plot_samples:
+        plt.scatter(samples[:, 0], samples[:, 1], color="red", marker="+", alpha=0.5)
+
+    plt.show()
+
+plot_circuit_distribution_2d(final_model_em, samples=data_train)
