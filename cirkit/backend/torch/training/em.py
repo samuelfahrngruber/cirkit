@@ -5,17 +5,12 @@ import torch
 from torch import Tensor
 
 from cirkit.backend.torch.circuits import TorchCircuit
-from cirkit.backend.torch.layers import TorchSumLayer, TorchGaussianLayer, TorchLayer, TorchHadamardLayer
-from cirkit.backend.torch.parameters.nodes import TorchTensorParameter
-from cirkit.backend.torch.parameters.parameter import TorchParameter
+from cirkit.backend.torch.layers import TorchSumLayer, TorchGaussianLayer, TorchLayer, TorchCPTLayer
 
-AnyTorchSumLayer = TorchSumLayer
+numerical_epsilon = 1e-10
 
 
-def update_params_nested(params: TorchParameter, new_values: torch.Tensor):
-    for p in params.outputs:
-        if type(p) == TorchTensorParameter:
-            p.update_params(new_values.squeeze())
+AnyTorchSumLayer = TorchSumLayer | TorchCPTLayer
 
 
 L = TypeVar("L", bound=TorchLayer)
@@ -55,70 +50,81 @@ class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
 
     def __init__(self, layer: AnyTorchSumLayer):
         super().__init__(layer)
-        self.weight = self.layer.weight.outputs[0]._ptensor
+        self.weight_grads = None
+        self.layer.weight.register_full_backward_hook(self.weight_grads_hook)
+
+    def weight_grads_hook(self, module, grad_input, grad_output):
+        self.weight_grads = grad_output[0]
+
+    def update_weight(self, new_weight):
+        self.layer.weight.nodes[0]._ptensor.copy_(new_weight)
 
     @override
     def expectation(self):
-        self.sufficient_statistics["n"] = self.weight.grad.sum(dim=2)
+        self.sufficient_statistics["n"] = self.weight_grads * self.layer.weight()
 
     @override
     def maximization(self):
         n = self.sufficient_statistics["n"]
-        new_weight = self.weight * n / n.sum()
-
-        update_params_nested(self.layer.weight, new_weight)
-        self.weight.copy_(new_weight)
+        new_weight = n / n.sum()
+        self.update_weight(new_weight)
 
 
 class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
 
     def __init__(self, layer: TorchGaussianLayer):
         super().__init__(layer)
-        self.mean = self.layer.params["mean"]()
-        self.stddev = self.layer.params["stddev"]()
         self.inputs = None
         self.outputs = None
+        self.output_grads = None
+        self.layer.register_full_backward_hook(self.output_grads_hook)
+
+    def output_grads_hook(self, module, grad_input, grad_output):
+        self.output_grads = grad_output[0]
+
+    def update_mean(self, new_mean):
+        self.layer.params["mean"].nodes[0]._ptensor.copy_(new_mean)
+
+    def update_stddev(self, new_stddev):
+        self.layer.params["stddev"].nodes[0]._ptensor.copy_(new_stddev)
 
     @override
     def layer_fn(self, layer, *inputs):
         self.inputs = torch.stack(inputs)
         self.outputs = layer(*inputs)
-        self.outputs.retain_grad()
         return self.outputs
 
     @override
     def expectation(self):
-        p_l = self.outputs.grad.permute(2, 1, 0)  # [Inputs, Samples, Outputs] -> [Outputs, Samples, Inputs]
+        p_l = self.output_grads.unsqueeze(0)  # [1, Features, Samples, Outputs]
 
-        x = self.inputs  # [Samples, Features]
-        x_2 = x ** 2  # [Samples, Features]
+        x = self.inputs  # [1, Features, Samples, 1]
+        x_2 = x ** 2  # [1, Features, Samples, 1]
 
-        self.sufficient_statistics["x"] = torch.sum(p_l * x, dim=2)  # [Outputs, Inputs]
-        self.sufficient_statistics["x^2"] = torch.sum(p_l * x_2, dim=2)  # [Outputs, Inputs]
-        self.sufficient_statistics["p_l"] = torch.sum(p_l, dim=1)  # [Outputs, Inputs]
+        self.sufficient_statistics["x"] = (p_l * x).sum(2, keepdim=True)  # [1, Features, 1, Outputs]
+        self.sufficient_statistics["x^2"] = (p_l * x_2).sum(2, keepdim=True)  # [1, Features, 1, Outputs]
+        self.sufficient_statistics["p_l"] = p_l.sum(2, keepdim=True)  # [1, Features, 1, Outputs]
 
     @override
     def maximization(self):
-        p_l = self.sufficient_statistics["p_l"]  # [Outputs, Inputs]
-        x = self.sufficient_statistics["x"] / p_l  # [Outputs, Inputs]
-        x_2 = self.sufficient_statistics["x^2"] / p_l  # [Outputs, Inputs]
+        p_l = self.sufficient_statistics["p_l"]  # [1, Features, 1, Outputs]
+        x = self.sufficient_statistics["x"] / p_l  # [1, Features, 1, Outputs]
+        x_2 = self.sufficient_statistics["x^2"] / p_l  # [1, Features, 1, Outputs]
 
-        mean = x  # [Outputs, Inputs]
-        var = x_2 - x ** 2  # [Outputs, Inputs]
-        stddev = torch.sqrt(var)  # [Outputs, Inputs]
+        mean = x  # [1, Features, 1, Outputs]
+        var = x_2 - x ** 2  # [1, Features, 1, Outputs]
+        stddev = var.sqrt() # [1, Features, 1, Outputs]
+        stddev = stddev.log() # TODO: investigate why this is needed - maybe the notebooks is wrong?
 
-        update_params_nested(self.layer.params["mean"], mean)
-        # update_params_nested(self.layer.params["stddev"], stddev)
-
-        self.mean.copy_(mean.squeeze())
-        #  self.stddev.copy_(stddev.squeeze())
+        self.update_mean(mean.squeeze())
+        self.update_stddev(stddev.squeeze())
 
 
 def create_layer_em(layer: TorchLayer) -> AbstractLayerEM[TorchLayer]:
     if layer.num_parameters == 0:
         return NoopLayerEM(layer)
     match layer:
-        case TorchSumLayer():
+        case TorchSumLayer() | TorchCPTLayer():
             return SumLayerEM(layer)
         case TorchGaussianLayer():
             return GaussianLayerEM(layer)
