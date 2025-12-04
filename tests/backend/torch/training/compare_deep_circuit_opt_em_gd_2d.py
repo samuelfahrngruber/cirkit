@@ -8,9 +8,13 @@ from torch.utils.data import TensorDataset, DataLoader
 from cirkit.backend.torch.training.em import FullBatchEM
 from cirkit.pipeline import PipelineContext, compile
 from cirkit.symbolic.circuit import Circuit
+from cirkit.symbolic.io import plot_circuit
 from cirkit.symbolic.layers import GaussianLayer, SumLayer, HadamardLayer
 from cirkit.templates import utils
+from cirkit.templates.data_modalities import tabular_data
 from cirkit.utils.scope import Scope
+from tests.backend.torch.training.utils import get_torch_device, create_and_compile_gmm, compile_circuit, \
+    detect_decreasing_likelihood
 
 # setup data
 n_samples = 1_000
@@ -26,45 +30,28 @@ train_dataloader = DataLoader(dataset_train, shuffle=True, batch_size=batch_size
 test_dataloader = DataLoader(dataset_test, shuffle=False, batch_size=batch_size)
 
 # setup torch
-device = torch.device("cpu")
+device = get_torch_device()
 
-def gmm_2d(n_components: int, seed = 42) -> Circuit:
-    torch.manual_seed(seed)
-    weight_factory = utils.parameterization_to_factory(utils.Parameterization(
-        activation='softmax',
-        initialization='uniform',
-    ))
-
-    g0 = GaussianLayer(Scope((0,)), n_components)
-    g1 = GaussianLayer(Scope((1,)), n_components)
-    prod = HadamardLayer(num_input_units=n_components, arity=2)
-    sl = SumLayer(n_components, 1, 1, weight_factory=weight_factory)
-
-    return Circuit(
-        layers=[g0, g1, prod, sl],
-        in_layers={
-            g0: [],
-            g1: [],
-            prod: [g0, g1],
-            sl: [prod],
-        },
-        outputs=[sl]
+def make_circuit():
+    torch.manual_seed(3)
+    symbolic_circuit = tabular_data(
+        region_graph="random-binary-tree",
+        num_features=2,
+        input_layers={"name": "gaussian", "args": {}},
+        num_input_units=2,
+        sum_product_layer="cp",
+        num_sum_units=2,
+        sum_weight_param=utils.Parameterization(
+            activation="softmax", initialization="normal"
+        ),
+        use_mixing_weights=True,
     )
+    plot_circuit(symbolic_circuit)
+    return symbolic_circuit
 
-def create_and_compile_gmm(n_components: int):
-    sym_gmm = gmm_2d(n_components=n_components)
-    ctx = PipelineContext(
-        backend='torch',
-        semiring='lse-sum',
-        fold=True,
-        optimize=False
-    )
-    with ctx:
-        torch_gmm = compile(sym_gmm)
-    return torch_gmm
-
-def run_experiment(n_components = 8, num_epochs = 50, use_em = True):
-    circuit = create_and_compile_gmm(n_components)
+def run_experiment(num_epochs = 50, use_em = True):
+    sym_circuit = make_circuit()
+    circuit = compile_circuit(sym_circuit)
 
     em = FullBatchEM(circuit)
     gd = optim.Adam(circuit.parameters(), lr=0.1)
@@ -100,6 +87,7 @@ def run_experiment(n_components = 8, num_epochs = 50, use_em = True):
 
 
 final_model_em, avg_lls_em = run_experiment(use_em=True)
+detect_decreasing_likelihood(avg_lls_em)
 final_model_gd, avg_lls_gd = run_experiment(use_em=False)
 
 plt.figure(figsize=(12, 6))
