@@ -64,3 +64,19 @@ def detect_decreasing_likelihood(likelihood_curve):
         {deltas=}
         {decreased=}
         {by=}""")
+
+def plot_avg_ll_curves(avg_ll_curves, labels, markers, colors, title, xlabel, ylabel):
+    curve_count = len(avg_ll_curves)
+    if not (len(labels) == curve_count and len(markers) == curve_count and len(colors) == curve_count):
+        raise ValueError("Cannot plot LL curves")
+
+    plt.figure(figsize=(12, 6))
+    ticks = range(len(avg_ll_curves[0]))
+    for avg_lls, label, marker, color in zip(avg_ll_curves, labels, markers, colors):
+        detect_decreasing_likelihood(avg_lls)
+        plt.plot(ticks, avg_lls, label=label, marker=marker, color=color)
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.show()

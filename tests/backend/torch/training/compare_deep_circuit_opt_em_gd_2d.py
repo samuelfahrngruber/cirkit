@@ -14,7 +14,7 @@ from cirkit.templates import utils
 from cirkit.templates.data_modalities import tabular_data
 from cirkit.utils.scope import Scope
 from tests.backend.torch.training.utils import get_torch_device, create_and_compile_gmm, compile_circuit, \
-    detect_decreasing_likelihood
+    detect_decreasing_likelihood, plot_avg_ll_curves
 
 # setup data
 n_samples = 1_000
@@ -90,15 +90,15 @@ final_model_em, avg_lls_em = run_experiment(use_em=True)
 detect_decreasing_likelihood(avg_lls_em)
 final_model_gd, avg_lls_gd = run_experiment(use_em=False)
 
-plt.figure(figsize=(12, 6))
-ticks = range(len(avg_lls_em))
-plt.plot(ticks, avg_lls_em, label="EM", marker="s")
-plt.plot(ticks, avg_lls_gd, label="GD", marker="v")
-plt.title("Gradient Descent (GD) vs. Expectation-Maximization (EM)")
-plt.xlabel("Full-Batch Epochs")
-plt.ylabel("Average Log-Likelihood")
-plt.legend()
-plt.show()
+plot_avg_ll_curves(
+    [avg_lls_em, avg_lls_gd],
+    labels=["EM", "GD"],
+    markers=["o", "v"],
+    colors=["r", "b"],
+    title="Full-Batch Gradient Descent vs. Expectation-Maximization (EM)",
+    xlabel="Epochs",
+    ylabel="Average Log-Likelihood",
+)
 
 def plot_circuit_distribution_2d(circuit, samples, plot_samples=True):
     plt.figure()
