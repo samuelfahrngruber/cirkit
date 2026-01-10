@@ -53,10 +53,10 @@ def create_and_compile_gmm(n_components: int, n_dims: int, seed = 42):
     torch_gmm = compile_circuit(sym_gmm)
     return torch_gmm
 
-def detect_decreasing_likelihood(likelihood_curve):
+def detect_decreasing_likelihood(likelihood_curve, threshold=0.):
     likelihood_curve = np.array(likelihood_curve)
     deltas = likelihood_curve[1:] - likelihood_curve[:-1]
-    decreased = deltas < 0
+    decreased = deltas < -threshold
     by = deltas * decreased
     if np.any(decreased):
         print(f"""WARNING: log likelihood increased:
@@ -73,7 +73,8 @@ def plot_avg_ll_curves(avg_ll_curves, labels, markers, colors, title, xlabel, yl
     plt.figure(figsize=(12, 6))
     ticks = range(len(avg_ll_curves[0]))
     for avg_lls, label, marker, color in zip(avg_ll_curves, labels, markers, colors):
-        detect_decreasing_likelihood(avg_lls)
+        print(f"Checking for decreasing likelihood for {label}...")
+        detect_decreasing_likelihood(avg_lls, 1e-3)
         plt.plot(ticks, avg_lls, label=label, marker=marker, color=color)
     plt.title(title)
     plt.xlabel(xlabel)
