@@ -51,7 +51,7 @@ def new_circuit():
 
 symbolic_circuit, circuit = new_circuit()
 
-def plot_circuit_distribution_2d(circuit, data=None, ax=plt, exp=False):
+def plot_circuit_distribution_2d(circuit, data=None, means=False, ax=plt, exp=False):
     x = np.float32(np.linspace(-10, 10, 100))
     y = np.float32(np.linspace(-10, 10, 100))
 
@@ -68,8 +68,14 @@ def plot_circuit_distribution_2d(circuit, data=None, ax=plt, exp=False):
     ax.contourf(X, Y, Z, levels=50)
     # ax.colorbar()
 
+    if means:
+        means_x = circuit.layers[0].params["mean"]().detach().numpy().T
+        means_y = circuit.layers[1].params["mean"]().detach().numpy().T
+        means = np.stack([means_x, means_y], axis=1).squeeze()
+        ax.scatter(means[:, 1], means[:, 0], color="black", marker="s", alpha=0.3, s=100)
+        ax.scatter(means[:, 1], means[:, 0], color="cyan", marker="$\\mu$", alpha=0.5)
     if data is not None:
-        ax.scatter(data[:, 1], data[:, 0], color="red", marker="+", alpha=0.5)
+        ax.scatter(data[:, 1], data[:, 0], color="red", marker="x", alpha=0.5)
 
 # plot_circuit_distribution_2d(circuit)
 
@@ -103,28 +109,28 @@ ring_samples = sample_rings(500, dim=2, radia=[1, 3, 7], sigma=0.5)
 ring_samples = np.float32(ring_samples)
 
 data = torch.from_numpy(ring_samples)
-data = torch.tensor([[1.0, 1.0], [0.8, 1.2], [2.0, 2.0], [2.1, 2.2], [2.2, 2.2], [2.1, 2.1], [-5, -3], [-3.1, -2.8], [-4, -3], [-1, -3], [0, 5]])
+data = torch.tensor([[1.0, 1.0], [0.8, 1.2], [2.0, 2.0], [2.1, 2.2], [2.2, 2.2], [2.1, 2.1], [-5, -3], [-3.1, -2.8], [-4, -3], [-4.5, -2], [-4.3, -2.2], [-1, -3], [0, 5]])
 
 em_losses = []
 grid_plotter = AutoGridPlotter()
 for i in range(8):
     em.zero_grad()
+    plot_circuit_distribution_2d(circuit, data, means=True, ax=grid_plotter.next_ax())
     lls = em.forward(data)
     em_losses.append(lls.detach().mean().numpy())
     em.backward_latent_posterior()
     em.expectation()
     em.maximization()
-    plot_circuit_distribution_2d(circuit, data, ax=grid_plotter.next_ax())
 
 
 plt.figure()
 plt.plot(range(len(em_losses)), em_losses)
 
 plt.figure()
-plot_circuit_distribution_2d(circuit)
+plot_circuit_distribution_2d(circuit, data, means=True)
 
 plt.figure()
-plot_circuit_distribution_2d(circuit, exp=True)
+plot_circuit_distribution_2d(circuit, data, means=True, exp=True)
 
 plt.show()
 
