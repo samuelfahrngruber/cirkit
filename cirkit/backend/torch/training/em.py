@@ -6,6 +6,7 @@ from torch import Tensor
 
 from cirkit.backend.torch.circuits import TorchCircuit
 from cirkit.backend.torch.layers import TorchSumLayer, TorchGaussianLayer, TorchLayer, TorchCPTLayer
+from cirkit.backend.torch.parameters.nodes import TorchParameterNode, TorchScaledSigmoidParameter, TorchSoftmaxParameter, TorchTensorParameter
 
 numerical_epsilon = 1e-10
 
@@ -14,6 +15,37 @@ AnyTorchSumLayer = TorchSumLayer | TorchCPTLayer
 
 
 L = TypeVar("L", bound=TorchLayer)
+
+
+class TorchParameterInteractions:
+
+    def __init__(self, param: TorchParameterNode):
+        self.param = param
+
+    def update(self, new_param_out: Tensor):
+        # TODO: check if the parameter is a single chain of reparameterizations, otherwise throw an error
+        # TODO: go through the reparameterization chain from the output to the input, inverting each step
+        # TODO: apply the value to the base parameter
+        for node in reversed(self.param.nodes):
+            if isinstance(node, TorchTensorParameter):
+                node._ptensor.copy_(new_param_out)
+                return
+            new_param_out = self.invert_node(node, new_param_out)
+        raise ValueError("Did not reach final tensor parameter. Could not update.")
+
+    @staticmethod
+    def invert_node(node: TorchParameterNode, out: Tensor) -> Tensor:
+        match node:
+            case TorchScaledSigmoidParameter():
+                # forward taken from implementation: torch.sigmoid(x) * (self.vmax - self.vmin) + self.vmin
+                normalized_out = (out - node.vmin) / (node.vmax - node.vmin)
+                input = torch.logit(normalized_out, eps=1e-7)
+                return input
+            case TorchSoftmaxParameter():
+                # forward taken from implementation: torch.softmax(x, dim=self.dim + 1)
+                # input is proportional to log output
+                return out.log()
+        raise ValueError(f"Cannot invert reparameterization for: {node}")
 
 
 class AbstractLayerEM(Generic[L], ABC):
@@ -56,9 +88,6 @@ class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
     def weight_grads_hook(self, module, grad_input, grad_output):
         self.weight_grads = grad_output[0]
 
-    def update_weight(self, new_weight):
-        self.layer.weight.nodes[0]._ptensor.copy_(new_weight)
-
     @override
     def expectation(self):
         self.sufficient_statistics["n"] = self.weight_grads * self.layer.weight()
@@ -67,7 +96,8 @@ class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
     def maximization(self):
         n = self.sufficient_statistics["n"]
         new_weight = n / n.sum()
-        self.update_weight(new_weight)
+        weight_handler = TorchParameterInteractions(self.layer.weight)
+        weight_handler.update(new_weight)
 
 
 class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
@@ -101,23 +131,24 @@ class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
         x = self.inputs  # [1, Features, Samples, 1]
         x_2 = x ** 2  # [1, Features, Samples, 1]
 
-        self.sufficient_statistics["x"] = (p_l * x).sum(2, keepdim=True)  # [1, Features, 1, Outputs]
-        self.sufficient_statistics["x^2"] = (p_l * x_2).sum(2, keepdim=True)  # [1, Features, 1, Outputs]
-        self.sufficient_statistics["p_l"] = p_l.sum(2, keepdim=True)  # [1, Features, 1, Outputs]
+        normalization_constant = p_l.sum(2, keepdim=True)
+        self.sufficient_statistics["x"] = (p_l * x).sum(2, keepdim=True) / normalization_constant # [1, Features, 1, Outputs]
+        self.sufficient_statistics["x^2"] = (p_l * x_2).sum(2, keepdim=True) / normalization_constant # [1, Features, 1, Outputs]
 
     @override
     def maximization(self):
-        p_l = self.sufficient_statistics["p_l"]  # [1, Features, 1, Outputs]
-        x = self.sufficient_statistics["x"] / p_l  # [1, Features, 1, Outputs]
-        x_2 = self.sufficient_statistics["x^2"] / p_l  # [1, Features, 1, Outputs]
+        x = self.sufficient_statistics["x"]
+        x_2 = self.sufficient_statistics["x^2"]
 
         mean = x  # [1, Features, 1, Outputs]
         var = x_2 - x ** 2  # [1, Features, 1, Outputs]
+        var = var.clamp_min(1e-7)
         stddev = var.sqrt() # [1, Features, 1, Outputs]
-        stddev = stddev.log() # TODO: investigate why this is needed - maybe the notebooks is wrong?
 
-        self.update_mean(mean.squeeze())
-        self.update_stddev(stddev.squeeze())
+        stddev_handler = TorchParameterInteractions(self.layer.params["stddev"])
+        stddev_handler.update(stddev.squeeze())
+        mean_handler = TorchParameterInteractions(self.layer.params["mean"])
+        mean_handler.update(mean.squeeze())
 
 
 def create_layer_em(layer: TorchLayer) -> AbstractLayerEM[TorchLayer]:
