@@ -1,4 +1,5 @@
 from abc import ABC
+from dataclasses import dataclass
 from typing import Generic, TypeVar, override
 
 import torch
@@ -7,9 +8,7 @@ from torch import Tensor
 from cirkit.backend.torch.circuits import TorchCircuit
 from cirkit.backend.torch.layers import TorchSumLayer, TorchGaussianLayer, TorchLayer, TorchCPTLayer
 from cirkit.backend.torch.parameters.nodes import TorchParameterNode, TorchScaledSigmoidParameter, TorchSoftmaxParameter, TorchTensorParameter
-
-numerical_epsilon = 1e-10
-
+from cirkit.backend.torch.parameters.parameter import TorchParameter
 
 AnyTorchSumLayer = TorchSumLayer | TorchCPTLayer
 
@@ -17,15 +16,21 @@ AnyTorchSumLayer = TorchSumLayer | TorchCPTLayer
 L = TypeVar("L", bound=TorchLayer)
 
 
+@dataclass
+class EMConfig:
+    eps_clamp_min_normalization: float = 1e-10
+    eps_clamp_inv_sigmoid: float = 1e-7
+    eps_clamp_variance: float = 1e-7
+
+
 class TorchParameterInteractions:
 
-    def __init__(self, param: TorchParameterNode):
+    def __init__(self, param: TorchParameter, config: EMConfig):
         self.param = param
+        self.config = config
 
     def update(self, new_param_out: Tensor):
         # TODO: check if the parameter is a single chain of reparameterizations, otherwise throw an error
-        # TODO: go through the reparameterization chain from the output to the input, inverting each step
-        # TODO: apply the value to the base parameter
         for node in reversed(self.param.nodes):
             if isinstance(node, TorchTensorParameter):
                 node._ptensor.copy_(new_param_out)
@@ -33,13 +38,12 @@ class TorchParameterInteractions:
             new_param_out = self.invert_node(node, new_param_out)
         raise ValueError("Did not reach final tensor parameter. Could not update.")
 
-    @staticmethod
-    def invert_node(node: TorchParameterNode, out: Tensor) -> Tensor:
+    def invert_node(self, node: TorchParameterNode, out: Tensor) -> Tensor:
         match node:
             case TorchScaledSigmoidParameter():
                 # forward taken from implementation: torch.sigmoid(x) * (self.vmax - self.vmin) + self.vmin
                 normalized_out = (out - node.vmin) / (node.vmax - node.vmin)
-                input = torch.logit(normalized_out, eps=1e-7)
+                input = torch.logit(normalized_out, eps=self.config.eps_clamp_inv_sigmoid)
                 return input
             case TorchSoftmaxParameter():
                 # forward taken from implementation: torch.softmax(x, dim=self.dim + 1)
@@ -50,8 +54,9 @@ class TorchParameterInteractions:
 
 class AbstractLayerEM(Generic[L], ABC):
 
-    def __init__(self, layer: L):
+    def __init__(self, layer: L, config: EMConfig = EMConfig()):
         self.layer = layer
+        self.config = config
         self.sufficient_statistics: dict[str, Tensor] = {}
 
     def layer_fn(self, layer, *inputs):
@@ -96,7 +101,7 @@ class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
     def maximization(self):
         n = self.sufficient_statistics["n"]
         new_weight = n / n.sum()
-        weight_handler = TorchParameterInteractions(self.layer.weight)
+        weight_handler = TorchParameterInteractions(self.layer.weight, self.config)
         weight_handler.update(new_weight)
 
 
@@ -132,6 +137,7 @@ class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
         x_2 = x ** 2  # [1, Features, Samples, 1]
 
         normalization_constant = p_l.sum(2, keepdim=True)
+        normalization_constant = normalization_constant.clamp_min(self.config.eps_clamp_min_normalization)
         self.sufficient_statistics["x"] = (p_l * x).sum(2, keepdim=True) / normalization_constant # [1, Features, 1, Outputs]
         self.sufficient_statistics["x^2"] = (p_l * x_2).sum(2, keepdim=True) / normalization_constant # [1, Features, 1, Outputs]
 
@@ -142,12 +148,12 @@ class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
 
         mean = x  # [1, Features, 1, Outputs]
         var = x_2 - x ** 2  # [1, Features, 1, Outputs]
-        var = var.clamp_min(1e-7)
+        var = var.clamp_min(self.config.eps_clamp_variance)
         stddev = var.sqrt() # [1, Features, 1, Outputs]
 
-        stddev_handler = TorchParameterInteractions(self.layer.params["stddev"])
+        stddev_handler = TorchParameterInteractions(self.layer.params["stddev"], self.config)
         stddev_handler.update(stddev.squeeze())
-        mean_handler = TorchParameterInteractions(self.layer.params["mean"])
+        mean_handler = TorchParameterInteractions(self.layer.params["mean"], self.config)
         mean_handler.update(mean.squeeze())
 
 
