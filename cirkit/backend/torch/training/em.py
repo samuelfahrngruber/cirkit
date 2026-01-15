@@ -18,9 +18,10 @@ L = TypeVar("L", bound=TorchLayer)
 
 @dataclass
 class EMConfig:
-    eps_clamp_min_normalization: float = 1e-10
+    eps_clamp_min_normalization: float = 1e-7
     eps_clamp_inv_sigmoid: float = 1e-7
     eps_clamp_variance: float = 1e-7
+    eps_clamp_sum_weights: float = 1e-7
 
 
 class TorchParameterInteractions:
@@ -101,6 +102,7 @@ class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
     def maximization(self):
         n = self.sufficient_statistics["n"]
         new_weight = n / n.sum()
+        new_weight = new_weight.clamp_min(self.config.eps_clamp_sum_weights)
         weight_handler = TorchParameterInteractions(self.layer.weight, self.config)
         weight_handler.update(new_weight)
 
