@@ -18,6 +18,7 @@ L = TypeVar("L", bound=TorchLayer)
 
 @dataclass
 class EMConfig:
+    learning_rate: float = 1.0
     eps_clamp_min_normalization: float = 1e-7
     eps_clamp_inv_sigmoid: float = 1e-7
     eps_clamp_variance: float = 1e-7
@@ -55,13 +56,19 @@ class TorchParameterInteractions:
 
 class AbstractLayerEM(Generic[L], ABC):
 
-    def __init__(self, layer: L, config: EMConfig = EMConfig()):
+    def __init__(self, layer: L, config: EMConfig):
         self.layer = layer
         self.config = config
         self.sufficient_statistics: dict[str, Tensor] = {}
 
     def layer_fn(self, layer, *inputs):
         return layer(*inputs)
+    
+    def apply_learning_rate(self, new_values: tuple[Tensor], cur_values: tuple[Tensor]):
+        return [
+            (1 - self.config.learning_rate) * cur_value + self.config.learning_rate * new_value # stochastic em update step
+            for new_value, cur_value in zip(new_values, cur_values)
+        ]
 
     def expectation(self):
         raise NotImplementedError()
@@ -72,8 +79,8 @@ class AbstractLayerEM(Generic[L], ABC):
 
 class NoopLayerEM(AbstractLayerEM[TorchLayer]):
 
-    def __init__(self, layer: TorchLayer):
-        super().__init__(layer)
+    def __init__(self, layer: TorchLayer, config: EMConfig):
+        super().__init__(layer, config)
 
     @override
     def expectation(self):
@@ -86,8 +93,8 @@ class NoopLayerEM(AbstractLayerEM[TorchLayer]):
 
 class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
 
-    def __init__(self, layer: AnyTorchSumLayer):
-        super().__init__(layer)
+    def __init__(self, layer: AnyTorchSumLayer, config: EMConfig):
+        super().__init__(layer, config)
         self.weight_grads = None
         self.layer.weight.register_full_backward_hook(self.weight_grads_hook)
 
@@ -103,14 +110,15 @@ class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
         n = self.sufficient_statistics["n"]
         new_weight = n / n.sum()
         new_weight = new_weight.clamp_min(self.config.eps_clamp_sum_weights)
+        (new_weight,) = self.apply_learning_rate([new_weight], [self.layer.weight()])
         weight_handler = TorchParameterInteractions(self.layer.weight, self.config)
         weight_handler.update(new_weight)
 
 
 class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
 
-    def __init__(self, layer: TorchGaussianLayer):
-        super().__init__(layer)
+    def __init__(self, layer: TorchGaussianLayer, config: EMConfig):
+        super().__init__(layer, config)
         self.inputs = None
         self.outputs = None
         self.output_grads = None
@@ -118,12 +126,6 @@ class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
 
     def output_grads_hook(self, module, grad_input, grad_output):
         self.output_grads = grad_output[0]
-
-    def update_mean(self, new_mean):
-        self.layer.params["mean"].nodes[0]._ptensor.copy_(new_mean)
-
-    def update_stddev(self, new_stddev):
-        self.layer.params["stddev"].nodes[0]._ptensor.copy_(new_stddev)
 
     @override
     def layer_fn(self, layer, *inputs):
@@ -153,30 +155,35 @@ class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
         var = var.clamp_min(self.config.eps_clamp_variance)
         stddev = var.sqrt() # [1, Features, 1, Outputs]
 
-        stddev_handler = TorchParameterInteractions(self.layer.params["stddev"], self.config)
-        stddev_handler.update(stddev.squeeze())
-        mean_handler = TorchParameterInteractions(self.layer.params["mean"], self.config)
-        mean_handler.update(mean.squeeze())
+        mean, stddev = mean.squeeze(), stddev.squeeze()
+
+        mean, stddev = self.apply_learning_rate([mean, stddev], [self.layer.mean(), self.layer.stddev()])
+
+        stddev_handler = TorchParameterInteractions(self.layer.stddev, self.config)
+        stddev_handler.update(stddev)
+        mean_handler = TorchParameterInteractions(self.layer.mean, self.config)
+        mean_handler.update(mean)
 
 
-def create_layer_em(layer: TorchLayer) -> AbstractLayerEM[TorchLayer]:
+def create_layer_em(layer: TorchLayer, config: EMConfig) -> AbstractLayerEM[TorchLayer]:
     if layer.num_parameters == 0:
-        return NoopLayerEM(layer)
+        return NoopLayerEM(layer, config)
     match layer:
         case TorchSumLayer() | TorchCPTLayer():
-            return SumLayerEM(layer)
+            return SumLayerEM(layer, config)
         case TorchGaussianLayer():
-            return GaussianLayerEM(layer)
+            return GaussianLayerEM(layer, config)
     raise ValueError(f"EM is not supported for layer: {layer}")
 
 
 class FullBatchEM:
 
-    def __init__(self, circuit: TorchCircuit):
+    def __init__(self, circuit: TorchCircuit, learning_rate: float = 1.0):
         self.circuit = circuit
         self.layer_ems: dict[TorchLayer, AbstractLayerEM[TorchLayer]] = {}
+        self.config = EMConfig(learning_rate=learning_rate)
         for layer in circuit.layers:
-            self.layer_ems[layer] = create_layer_em(layer)
+            self.layer_ems[layer] = create_layer_em(layer, self.config)
         self.log_likelihoods_per_sample = None
 
     def zero_grad(self):
