@@ -178,10 +178,10 @@ def create_layer_em(layer: TorchLayer, config: EMConfig) -> AbstractLayerEM[Torc
 
 class FullBatchEM:
 
-    def __init__(self, circuit: TorchCircuit, learning_rate: float = 1.0):
+    def __init__(self, circuit: TorchCircuit, lr: float = 1.0):
         self.circuit = circuit
         self.layer_ems: dict[TorchLayer, AbstractLayerEM[TorchLayer]] = {}
-        self.config = EMConfig(learning_rate=learning_rate)
+        self.config = EMConfig(learning_rate=lr)
         for layer in circuit.layers:
             self.layer_ems[layer] = create_layer_em(layer, self.config)
         self.log_likelihoods_per_sample = None
