@@ -63,7 +63,7 @@ class AbstractLayerEM(Generic[L], ABC):
 
     def layer_fn(self, layer, *inputs):
         return layer(*inputs)
-    
+
     def apply_learning_rate(self, new_values: tuple[Tensor], cur_values: tuple[Tensor]):
         return [
             (1 - self.config.learning_rate) * cur_value + self.config.learning_rate * new_value # stochastic em update step
@@ -176,7 +176,7 @@ def create_layer_em(layer: TorchLayer, config: EMConfig) -> AbstractLayerEM[Torc
     raise ValueError(f"EM is not supported for layer: {layer}")
 
 
-class FullBatchEM:
+class StochasticEM:
 
     def __init__(self, circuit: TorchCircuit, lr: float = 1.0):
         self.circuit = circuit
@@ -210,3 +210,8 @@ class FullBatchEM:
             for layer, em in self.layer_ems.items():
                 if em:
                     em.maximization()
+
+class FullBatchEM(StochasticEM):
+
+    def __init__(self, circuit: TorchCircuit):
+        super().__init__(circuit, lr=1.0)
