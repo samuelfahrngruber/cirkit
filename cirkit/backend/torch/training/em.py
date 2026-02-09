@@ -18,11 +18,17 @@ L = TypeVar("L", bound=TorchLayer)
 
 @dataclass
 class EMConfig:
+    
     learning_rate: float = 1.0
+
     eps_clamp_min_normalization: float = 1e-7
     eps_clamp_inv_sigmoid: float = 1e-7
     eps_clamp_variance: float = 1e-7
     eps_clamp_sum_weights: float = 1e-7
+
+    debug_block_weight_updates: bool = False
+    debug_block_mean_updates: bool = False
+    debug_block_stddev_updates: bool = False
 
 
 class TorchParameterInteractions:
@@ -107,6 +113,8 @@ class SumLayerEM(AbstractLayerEM[AnyTorchSumLayer]):
 
     @override
     def maximization(self):
+        if self.config.debug_block_weight_updates:
+            return
         n = self.sufficient_statistics["n"]
         new_weight = n / n.sum()
         new_weight = new_weight.clamp_min(self.config.eps_clamp_sum_weights)
@@ -153,17 +161,26 @@ class GaussianLayerEM(AbstractLayerEM[TorchGaussianLayer]):
         mean = x  # [1, Features, 1, Outputs]
         var = x_2 - x ** 2  # [1, Features, 1, Outputs]
         var = var.clamp_min(self.config.eps_clamp_variance)
-        stddev = var.sqrt() # [1, Features, 1, Outputs]
 
-        mean, stddev = mean.squeeze(), stddev.squeeze()
+        if self.config.debug_block_mean_updates:
+            mean_adj = self.layer.mean().unsqueeze(0).unsqueeze(2)  # [1, Features, 1, Outputs]
+            var_adj = x_2 - 2 * mean_adj * x + mean_adj ** 2
+            var_adj = var_adj.clamp_min(self.config.eps_clamp_variance)
+            var = var_adj
+        
+        mean, var = mean.squeeze(), var.squeeze()
+        
+        mean_cur, var_cur = self.layer.mean(), self.layer.stddev() ** 2
+        mean, var = self.apply_learning_rate([mean, var], [mean_cur, var_cur])
 
-        mean, stddev = self.apply_learning_rate([mean, stddev], [self.layer.mean(), self.layer.stddev()])
+        stddev = var.sqrt()
 
         stddev_handler = TorchParameterInteractions(self.layer.stddev, self.config)
-        stddev_handler.update(stddev)
+        if not self.config.debug_block_stddev_updates:
+            stddev_handler.update(stddev)
         mean_handler = TorchParameterInteractions(self.layer.mean, self.config)
-        mean_handler.update(mean)
-
+        if not self.config.debug_block_mean_updates:
+            mean_handler.update(mean)
 
 def create_layer_em(layer: TorchLayer, config: EMConfig) -> AbstractLayerEM[TorchLayer]:
     if layer.num_parameters == 0:
@@ -178,10 +195,11 @@ def create_layer_em(layer: TorchLayer, config: EMConfig) -> AbstractLayerEM[Torc
 
 class StochasticEM:
 
-    def __init__(self, circuit: TorchCircuit, lr: float = 1.0):
+    def __init__(self, circuit: TorchCircuit, lr: float, config: EMConfig = EMConfig()):
         self.circuit = circuit
         self.layer_ems: dict[TorchLayer, AbstractLayerEM[TorchLayer]] = {}
-        self.config = EMConfig(learning_rate=lr)
+        self.config = config
+        self.config.learning_rate = lr
         for layer in circuit.layers:
             self.layer_ems[layer] = create_layer_em(layer, self.config)
         self.log_likelihoods_per_sample = None
@@ -213,5 +231,5 @@ class StochasticEM:
 
 class FullBatchEM(StochasticEM):
 
-    def __init__(self, circuit: TorchCircuit):
-        super().__init__(circuit, lr=1.0)
+    def __init__(self, circuit: TorchCircuit, config: EMConfig = EMConfig()):
+        super().__init__(circuit, 1.0, config)
